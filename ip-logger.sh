@@ -52,6 +52,7 @@ BLACKLIST=(
 output_file=""
 blacklist_file=""
 LOG_FOLDER="/var/log"
+NO_STDOUT=false
 
 # parsing arguments
 while [[ $# -gt 0 ]]; do
@@ -88,18 +89,32 @@ while [[ $# -gt 0 ]]; do
             COLLECT_EVIDENCE=false
             shift 1
             ;;
+        # no stdout argument (write only to file)
+        -nS|--no-stdout)
+            NO_STDOUT=true
+            shift 1
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence]"
+            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence] [-nS|--no-stdout]"
             exit 1
             ;;
     esac
 done
 
+if [[ "$NO_STDOUT" = true && -z "$output_file" ]]; then
+    echo "error: --no-stdout requires --output to be specified"
+    exit 1
+fi
+
 if [ "$COLLECT_EVIDENCE" = true ]; then
     echo -e "\033[1;38mEvidence collection: \033[0;32mENABLED\033[0m"
 else
     echo -e "\033[1;38mEvidence collection: \033[0;31mDISABLED\033[0m"
+fi
+
+if [[ "$NO_STDOUT" = true ]]; then
+    echo -e "\033[1;38mOutput mode: \033[0;31mFILE ONLY\033[0m"
 fi
 
 echo "Using log folder: $LOG_FOLDER"
@@ -111,36 +126,66 @@ if [[ -n "$output_file" ]]; then
     > "$output_file"
 fi
 
-logs=$(egrep -rni '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOG_FOLDER")
+logs=$(egrep -rniI '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOG_FOLDER" 2>/dev/null)
 
 # Get all IP addresses of all logs in the folder
 logs_ips=$(echo "$logs" | grep -oE '(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])')
 
 # Remove blacklisted IP addresses
-for ip in "${BLACKLIST[@]}"; do
-    logs_ips=$(echo "$logs_ips" | grep -v "$ip")
-done
+blacklist_pattern=$(printf '%s\n' "${BLACKLIST[@]}" | paste -sd '|')
+logs_ips=$(echo "$logs_ips" | grep -vE "^($blacklist_pattern)$")
 
-# Count occurrences of each IP address
+# Count occurrences of each IP address (keep duplicates for count)
 while read -r ip; do
-    echo -n "."
+    [[ "$NO_STDOUT" = false ]] && echo -n "."
     if [[ -n "$ip" ]]; then
         ((IP_COUNTS["$ip"]++))
-        if [[ -z "${IP_LOCATIONS[$ip]}" ]]; then
-            # getting country name from geoiplookup
-            location=$(geoiplookup "$ip" | awk -F ': ' '{print $2}' | awk -F ', ' '{print $2}')
-            if [[ -z "$location" ]]; then
-                # getting country code from whois lookup and then getting country name from iso-codes
-                country_code=$(whois "$ip" | grep -i "country:" | head -n 1 | awk '{print $2}')
-                location=$(jq -r '.["3166-1"][] | select(.alpha_2=="'"$country_code"'") | .name // "Unknown"' "$ISO_FILE")
-            fi
-            IP_LOCATIONS["$ip"]="$location"
-        fi
     fi
 done <<< "$logs_ips"
 
-# clear terminal
-clear
+# Get unique IPs for geolocation
+unique_ips=($(echo "${!IP_COUNTS[@]}"))
+
+# Get geolocation of an IP address in the background
+#
+# Parameters:
+#   $1 - IP address
+#
+# Return:
+#   IP address and its geolocation separated by '|'
+#
+# Description:
+#   This function uses geoiplookup and whois commands to get the geolocation of an IP address in the background.
+#   If geoiplookup does not return a geolocation, the function will use whois command to get the country code of the IP address and then use jq command to get the country name from the country code.
+get_location_bg() {
+    local ip="$1"
+    local location=$(geoiplookup "$ip" 2>/dev/null | awk -F ': ' '{print $2}' | awk -F ', ' '{print $2}')
+    if [[ -z "$location" ]]; then
+        local country_code=$(whois "$ip" 2>/dev/null | grep -i "^country:" | head -n1 | awk '{print $2}')
+        location=$(jq -r '.["3166-1"][] | select(.alpha_2=="'"$country_code"'") | .name // "Unknown"' "$ISO_FILE")
+    fi
+    echo "$ip|$location"
+}
+
+export -f get_location_bg
+export ISO_FILE
+
+tmpfile=$(mktemp)
+max_jobs=8
+for ip in "${unique_ips[@]}"; do
+    while [[ $(jobs -r | wc -l) -ge $max_jobs ]]; do
+        sleep 0.1
+    done
+    (get_location_bg "$ip" >> "$tmpfile") &
+done
+wait
+
+while IFS='|' read -r ip location; do
+    IP_LOCATIONS["$ip"]="$location"
+done < "$tmpfile"
+rm -f "$tmpfile"
+
+[[ "$NO_STDOUT" = false ]] && clear
 
 # Collect evidence for a given IP address
 # 
@@ -160,12 +205,19 @@ collect_evidence() {
     local evidence=$(echo "$logs" | grep "$ip")
     local first_line=$(echo "$evidence" | head -1)
 
-    # format date
-    local date=$(echo "$first_line" \
-        | sed 's/^[^:]*:[0-9]*://' \
-        | awk '{print $1, $2, $3}')
-    local current_year=$(date +"%Y")
-    local formatted_date=$(date -d "$date $current_year" +"%d/%m/%YT%H:%M:%S")
+    # format date - extract YYYY-MM-DD HH:MM:SS (handle comma milliseconds)
+    local date_part=$(echo "$first_line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
+    local formatted_date=""
+    if [[ -n "$date_part" ]]; then
+        formatted_date=$(date -d "${date_part}" +"%d/%m/%YT%H:%M:%S" 2>/dev/null) || formatted_date="$date_part"
+    else
+        # Try with comma (milliseconds): YYYY-MM-DD HH:MM:SS,mmm
+        date_part=$(echo "$first_line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}' | head -1)
+        if [[ -n "$date_part" ]]; then
+            date_part=${date_part%,*}  # remove milliseconds
+            formatted_date=$(date -d "${date_part}" +"%d/%m/%YT%H:%M:%S" 2>/dev/null) || formatted_date="$date_part"
+        fi
+    fi
 
     # format evidence
     local evidence_final=$(echo "$evidence" | sed -E 's/^.*sshd[^:]*: //' | sed -E 's/ port [0-9]+//' | sort -u | head -3)
@@ -185,11 +237,12 @@ collect_evidence() {
 
 # Write the output of the command to a file or to stdout
 # Description:
-#   This function writes the output of the command to a file
-#   or to stdout if no file is specified. If a file is
-#   specified, the output is appended to the file.
+#   This function writes the output to a file and/or stdout.
+#   When NO_STDOUT is true, only writes to file.
 write_file() {
-    if [[ -n "$output_file" ]]; then
+    if [[ "$NO_STDOUT" = true ]]; then
+        cat >> "$output_file"
+    elif [[ -n "$output_file" ]]; then
         tee -a "$output_file"
     else
         cat
