@@ -13,6 +13,14 @@ if ! command -v geoiplookup &> /dev/null; then
     exit 1
 fi
 
+# checking if the whois command is installed
+if ! command -v whois &> /dev/null; then
+    echo "whois could not be found. Please install it to get country codes for IP addresses."
+    echo "On Debian/Ubuntu: sudo apt-get install whois"
+    echo "On Arch Linux: sudo pacman -S whois"
+    exit 1
+fi
+
 # checking if iso-codes is installed for getting country name from country code
 if [[ ! -d "/usr/share/iso-codes" ]]; then
     echo "iso-codes data directory could not be found. Please install iso-codes to get country codes for IP addresses."
@@ -43,24 +51,25 @@ BLACKLIST=(
 
 output_file=""
 blacklist_file=""
+LOG_FOLDER="/var/log"
 
 # parsing arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         # result output file argument
         -o|--output)
-            OUTPUT_FILE="$2"
+            output_file="$2"
             shift 2
             ;;
         # blacklist file argument
         -b|--blacklist)
-            BLACKLIST_FILE="$2"
-            if [[ -f "$BLACKLIST_FILE" ]]; then
+            blacklist_file="$2"
+            if [[ -f "$blacklist_file" ]]; then
                 while IFS= read -r line; do
                     BLACKLIST+=("$line")
-                done < "$BLACKLIST_FILE"
+                done < "$blacklist_file"
             else
-                echo "error: Blacklist file not found: $BLACKLIST_FILE"
+                echo "error: Blacklist file not found: $blacklist_file"
                 exit 1
             fi
             shift 2
@@ -96,16 +105,16 @@ fi
 echo "Using log folder: $LOG_FOLDER"
 
 # if output file is specified
-if [[ -n "$OUTPUT_FILE" ]]; then
-    echo "Output will be written to: $OUTPUT_FILE"
+if [[ -n "$output_file" ]]; then
+    echo "Output will be written to: $output_file"
     # create or clear the output file
-    > "$OUTPUT_FILE"
+    > "$output_file"
 fi
 
 logs=$(egrep -rni '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOG_FOLDER")
 
 # Get all IP addresses of all logs in the folder
-logs_ips=$(echo "$logs" | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+logs_ips=$(echo "$logs" | grep -oE '(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])')
 
 # Remove blacklisted IP addresses
 for ip in "${BLACKLIST[@]}"; do
@@ -180,8 +189,8 @@ collect_evidence() {
 #   or to stdout if no file is specified. If a file is
 #   specified, the output is appended to the file.
 write_file() {
-    if [[ -n "$OUTPUT_FILE" ]]; then
-        tee -a "$OUTPUT_FILE"
+    if [[ -n "$output_file" ]]; then
+        tee -a "$output_file"
     else
         cat
     fi
