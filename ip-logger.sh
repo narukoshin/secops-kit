@@ -53,6 +53,7 @@ output_file=""
 blacklist_file=""
 LOG_FOLDER="/var/log"
 NO_STDOUT=false
+SKIP_SINGLE=false
 
 # parsing arguments
 while [[ $# -gt 0 ]]; do
@@ -94,9 +95,13 @@ while [[ $# -gt 0 ]]; do
             NO_STDOUT=true
             shift 1
             ;;
+        --skip-single)
+            SKIP_SINGLE=true
+            shift 1
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence] [-nS|--no-stdout]"
+            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence] [-nS|--no-stdout] [--skip-single]"
             exit 1
             ;;
     esac
@@ -264,6 +269,11 @@ CONTINUE_PROMPTED=false
 for ip in $(for k in "${!IP_COUNTS[@]}"; do echo "${IP_COUNTS[$k]} $k"; done | sort -nr | cut -d' ' -f2-); do
     count=${IP_COUNTS[$ip]}
     location=${IP_LOCATIONS[$ip]}
+
+    # skip single occurrence if --skip-single is specified
+    if [ "$count" -eq 1 ] && [ "$SKIP_SINGLE" = true ]; then
+        continue
+    fi
 
     # when the count starts to be low, asking if the user wants to continue
     if [ "$count" -le 1 ] && [ "$CONTINUE_PROMPTED" = false ]; then
