@@ -2,10 +2,6 @@
 
 # Security script for log review and IP address extraction
 
-# Set DEV to true for development environment, false for production
-# In development, logs will be read from the current directory's "logs" folder.
-DEV=true
-
 # Set COLLECT_EVIDENCE to true to collect evidence
 COLLECT_EVIDENCE=true
 
@@ -35,12 +31,6 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-if [ "$COLLECT_EVIDENCE" = true ]; then
-    echo -e "\033[1;38mEvidence collection: \033[0;32mENABLED\033[0m"
-else
-    echo -e "\033[1;38mEvidence collection: \033[0;31mDISABLED\033[0m"
-fi
-
 declare -A IP_COUNTS
 declare -A IP_LOCATIONS
 
@@ -51,13 +41,66 @@ BLACKLIST=(
     "::1"
 )
 
-if [ "$DEV" = true ]; then
-    LOG_FOLDER="./logs"
+output_file=""
+blacklist_file=""
+
+# parsing arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        # result output file argument
+        -o|--output)
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        # blacklist file argument
+        -b|--blacklist)
+            BLACKLIST_FILE="$2"
+            if [[ -f "$BLACKLIST_FILE" ]]; then
+                while IFS= read -r line; do
+                    BLACKLIST+=("$line")
+                done < "$BLACKLIST_FILE"
+            else
+                echo "error: Blacklist file not found: $BLACKLIST_FILE"
+                exit 1
+            fi
+            shift 2
+            ;;
+        # log folder
+        -l|--log-folder)
+            LOG_FOLDER="$2"
+            if [[ ! -d "$LOG_FOLDER" ]]; then
+                echo "error: Log folder not found: $LOG_FOLDER"
+                exit 1
+            fi
+            shift 2
+            ;;
+        # no evidence collection argument
+        -nE|--no-evidence)
+            COLLECT_EVIDENCE=false
+            shift 1
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$COLLECT_EVIDENCE" = true ]; then
+    echo -e "\033[1;38mEvidence collection: \033[0;32mENABLED\033[0m"
 else
-    LOG_FOLDER="/var/log"
+    echo -e "\033[1;38mEvidence collection: \033[0;31mDISABLED\033[0m"
 fi
 
 echo "Using log folder: $LOG_FOLDER"
+
+# if output file is specified
+if [[ -n "$OUTPUT_FILE" ]]; then
+    echo "Output will be written to: $OUTPUT_FILE"
+    # create or clear the output file
+    > "$OUTPUT_FILE"
+fi
 
 logs=$(egrep -rni '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOG_FOLDER")
 
@@ -90,10 +133,17 @@ done <<< "$logs_ips"
 # clear terminal
 clear
 
-echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
-echo -e "\e[1;38;5;141m               RESULTS\e[0m"
-echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m"
-
+# Collect evidence for a given IP address
+# 
+# Parameters:
+#   ip: IP address to collect evidence for
+# 
+# Description:
+#   This function collects evidence for a given IP address by 
+#   extracting relevant information from the logs. The evidence 
+#   is formatted and stored in the IP_EVIDENCE associative array.
+#   The function also prints the collected evidence in a human-readable 
+#   format.
 collect_evidence() {
     local ip="$1"
 
@@ -124,6 +174,23 @@ collect_evidence() {
     echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m\n"
 }
 
+# Write the output of the command to a file or to stdout
+# Description:
+#   This function writes the output of the command to a file
+#   or to stdout if no file is specified. If a file is
+#   specified, the output is appended to the file.
+write_file() {
+    if [[ -n "$OUTPUT_FILE" ]]; then
+        tee -a "$OUTPUT_FILE"
+    else
+        cat
+    fi
+}
+
+echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m" | write_file
+echo -e "\e[1;38;5;141m               RESULTS\e[0m" | write_file
+echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m\n" | write_file
+
 if [ "$COLLECT_EVIDENCE" = true ]; then
     declare -A IP_EVIDENCE
     echo "Collecting evidence for each IP address..."
@@ -151,5 +218,5 @@ for ip in $(for k in "${!IP_COUNTS[@]}"; do echo "${IP_COUNTS[$k]} $k"; done | s
     else
         evidence=""
     fi 
-    printf "\033[1;35m%s\033[0m (%s) \033[1;39mCOUNT-%d\033[0m\n%s\n\n" "$ip" "$location" "$count" "$evidence"
+    printf "\033[1;35m%s\033[0m (%s) \033[1;39mCOUNT-%d\033[0m\n%s\n\n" "$ip" "$location" "$count" "$evidence" | write_file
 done
