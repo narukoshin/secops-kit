@@ -210,10 +210,15 @@ collect_evidence() {
     local evidence=$(echo "$logs" | grep "$ip")
     local first_line=$(echo "$evidence" | head -1)
 
-    # format date - extract YYYY-MM-DD HH:MM:SS (handle comma milliseconds)
-    local date_part=$(echo "$first_line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
+    # format date - extract syslog format (Month DD HH:MM:SS) or ISO format (YYYY-MM-DD HH:MM:SS)
+    local date_part=$(echo "$first_line" | grep -oE '([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}|[A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2})' | head -1)
     local formatted_date=""
     if [[ -n "$date_part" ]]; then
+        # Check if syslog format (no year) - add current year
+        if [[ ! "$date_part" =~ ^[0-9]{4} ]]; then
+            local current_year=$(date +"%Y")
+            date_part="$date_part $current_year"
+        fi
         formatted_date=$(date -d "${date_part}" +"%d/%m/%YT%H:%M:%S" 2>/dev/null) || formatted_date="$date_part"
     else
         # Try with comma (milliseconds): YYYY-MM-DD HH:MM:SS,mmm
