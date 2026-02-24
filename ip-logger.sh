@@ -51,7 +51,7 @@ BLACKLIST=(
 
 output_file=""
 blacklist_file=""
-LOG_FOLDER="/var/log"
+LOGS_SOURCE="/var/log"
 NO_STDOUT=false
 SKIP_SINGLE=false
 
@@ -77,10 +77,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # log folder
-        -l|--log-folder)
-            LOG_FOLDER="$2"
-            if [[ ! -d "$LOG_FOLDER" ]]; then
-                echo "error: Log folder not found: $LOG_FOLDER"
+        -l|--log-source)
+            LOGS_SOURCE="$2"
+            if [[ ! -d "$LOGS_SOURCE" && ! -f "$LOGS_SOURCE" ]]; then
+                echo "error: Log source not found: $LOGS_SOURCE"
                 exit 1
             fi
             shift 2
@@ -101,7 +101,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-folder <log_folder>] [-nE|--no-evidence] [-nS|--no-stdout] [--skip-single]"
+            echo "Usage: $0 [-o|--output <output_file>] [-b|--blacklist <blacklist_file>] [-l|--log-source <log_source>] [-nE|--no-evidence] [-nS|--no-stdout] [--skip-single]"
             exit 1
             ;;
     esac
@@ -122,7 +122,18 @@ if [[ "$NO_STDOUT" = true ]]; then
     echo -e "\033[1;38mOutput mode: \033[0;31mFILE ONLY\033[0m"
 fi
 
-echo "Using log folder: $LOG_FOLDER"
+# debug
+echo "Log source: $LOGS_SOURCE"
+
+# Cheking if LOGS_SOURCE is file or folder
+if [[ -f "$LOGS_SOURCE" ]]; then
+    echo "Using log file: $LOGS_SOURCE"
+elif [[ -d "$LOGS_SOURCE" ]]; then
+    echo "Using log folder: $LOGS_SOURCE"
+else
+    echo "error: Log source not found: $LOGS_SOURCE"
+    exit 1
+fi
 
 # if output file is specified
 if [[ -n "$output_file" ]]; then
@@ -131,7 +142,20 @@ if [[ -n "$output_file" ]]; then
     > "$output_file"
 fi
 
-logs=$(egrep -rniI '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOG_FOLDER" 2>/dev/null)
+# if logs source is a folder, then using grep with resurcive search
+
+if [[ -d "$LOGS_SOURCE" ]]; then
+    echo "Searching for IP addresses in log folder..."
+    logs=$(egrep -rniI '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOGS_SOURCE" 2>/dev/null)
+fi
+
+# if logs source is a file, then using grep to search for IP addresses in the file
+
+if [[ -f "$LOGS_SOURCE" ]]; then
+    echo "Searching for IP addresses in log file..."
+    logs=$(egrep -niI '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$LOGS_SOURCE" 2>/dev/null)
+fi
+
 
 # Get all IP addresses of all logs in the folder
 logs_ips=$(echo "$logs" | grep -oE '(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])')
