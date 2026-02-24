@@ -41,6 +41,7 @@ fi
 
 declare -A IP_COUNTS
 declare -A IP_LOCATIONS
+declare -A IP_ABUSE_EMAILS
 
 # Blacklist of IP addresses to ignore (e.g., local IPs)
 BLACKLIST=(
@@ -196,7 +197,17 @@ get_location_bg() {
     echo "$ip|$location"
 }
 
+get_abuse_email_bg() {
+    local ip="$1"
+    local email=$(curl -s "https://rest.db.ripe.net/abuse-contact/${ip}.json" 2>/dev/null | jq -r '.["abuse-contacts"].email // empty')
+    if [[ -z "$email" ]]; then
+        email=$(whois "$ip" 2>/dev/null | grep -iE "^abuse-mailbox:|^abuse-email:|^org-abuse-email:" | head -n1 | awk -F ': ' '{print $2}' | xargs)
+    fi
+    echo "$ip|$email"
+}
+
 export -f get_location_bg
+export -f get_abuse_email_bg
 export ISO_FILE
 
 tmpfile=$(mktemp)
@@ -213,6 +224,20 @@ while IFS='|' read -r ip location; do
     IP_LOCATIONS["$ip"]="$location"
 done < "$tmpfile"
 rm -f "$tmpfile"
+
+tmpfile_abuse=$(mktemp)
+for ip in "${unique_ips[@]}"; do
+    while [[ $(jobs -r | wc -l) -ge $max_jobs ]]; do
+        sleep 0.1
+    done
+    (get_abuse_email_bg "$ip" >> "$tmpfile_abuse") &
+done
+wait
+
+while IFS='|' read -r ip email; do
+    IP_ABUSE_EMAILS["$ip"]="$email"
+done < "$tmpfile_abuse"
+rm -f "$tmpfile_abuse"
 
 [[ "$NO_STDOUT" = false ]] && clear
 
@@ -319,5 +344,28 @@ for ip in $(for k in "${!IP_COUNTS[@]}"; do echo "${IP_COUNTS[$k]} $k"; done | s
     else
         evidence=""
     fi 
-    printf "\033[1;35m%s\033[0m (%s) \033[1;39mCOUNT-%d\033[0m\n%s\n\n" "$ip" "$location" "$count" "$evidence" | write_file
+    printf "\033[1;35m%s\033[0m (%s) \033[1;39mCOUNT-%d %s\033[0m\n%s\n\n" "$ip" "$location" "$count" "${IP_ABUSE_EMAILS[$ip]}" "$evidence" | write_file
 done
+
+# Group IPs by abuse email
+declare -A ABUSE_EMAIL_IPS
+for ip in "${!IP_ABUSE_EMAILS[@]}"; do
+    email="${IP_ABUSE_EMAILS[$ip]}"
+    if [[ -n "$email" ]]; then
+        ABUSE_EMAIL_IPS["$email"]+="${ip}(${IP_COUNTS[$ip]}) "
+    fi
+done
+
+# Print summary by abuse email
+if [[ ${#ABUSE_EMAIL_IPS[@]} -gt 0 ]]; then
+    echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m" | write_file
+    echo -e "\e[1;38;5;141m          ABUSE EMAIL SUMMARY\e[0m" | write_file
+    echo -e "\e[38;5;141m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m\n" | write_file
+
+    for email in "${!ABUSE_EMAIL_IPS[@]}"; do
+        ips=${ABUSE_EMAIL_IPS[$email]}
+        echo -e "\e[38;5;141mAbuse Email:\e[0m \033[1;39m$email\e[0m" | write_file
+        echo -e "\e[38;5;141mIPs:\e[0m \e[38;5;250m$ips\e[0m" | write_file
+        echo "" | write_file
+    done
+fi
