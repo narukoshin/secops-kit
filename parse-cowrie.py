@@ -1,548 +1,460 @@
-#!/usr/bin/env python3
 import json
 import os
 import glob
-import sys
 import urllib.request
 from collections import defaultdict
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-VERSION = "1.0.0"
 
-LOG_FILES = glob.glob("cowrie.json*")
-OUTPUT_COMBINED = "cowrie_combined.json"
+class CowrieLogParser:
+    VERSION = "1.0.0"
 
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-RED = "\033[91m"
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-BLUE = "\033[94m"
-MAGENTA = "\033[95m"
-CYAN = "\033[96m"
-WHITE = "\033[97m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
 
-def color(text, color_code):
-    """
-    Return a string with the specified color code applied to it.
+    # Written report
+    REPORT = []
+    output_report = "cowrie_report.log"
 
-    Parameters:
-    text (str): The string to apply the color code to.
-    color_code (str): The color code to apply.
+    def __init__(self, log_files_pattern="cowrie.json*", output_combined="cowrie_combined.json"):
+        self.log_files_pattern = log_files_pattern
+        self.output_combined = output_combined
+        self.log_files = glob.glob(self.log_files_pattern)
+        
 
-    Returns:
-    str: The string with the color code applied.
-    """
-    return f"{color_code}{text}{RESET}"
+    def write_report(self, content) -> None:
+        """
+        Write a line to the report.
 
-def input_with_default(prompt, default="n"):
-    """
-    Prompt the user for input, and return the response if it is not empty.
-    If the response is empty, return the default value.
+        Args:
+            content (str): The content to be written to the report.
 
-    Parameters:
-    prompt (str): The prompt to display to the user.
-    default (str): The default value to return if the user response is empty.
+        Returns:
+            None
+        """
+        self.REPORT.append(content)
+        print(content)
 
-    Returns:
-    str: The user response if it is not empty, otherwise the default value.
+    def color(self, text, color_code):
+        return f"{color_code}{text}{self.RESET}"
 
-    Raises:
-    EOFError: If the user presses Ctrl+D to end the input stream.
-    KeyboardInterrupt: If the user presses Ctrl+C to interrupt the program.
-    """
-    try:
-        response = input(f"{prompt} [{default}]: ").strip().lower()
-        return response if response else default
-    except (EOFError, KeyboardInterrupt):
-        print(color("\n[!] Exiting...", RED))
-        sys.exit(0)
+    def input_with_default(self, prompt, default="n"):
+        import sys
+        try:
+            response = input(f"{prompt} [{default}]: ").strip().lower()
+            return response if response else default
+        except (EOFError, KeyboardInterrupt):
+            print(self.color("\n[!] Exiting...", self.RED))
+            sys.exit(0)
 
-def combine_logs():
-    """
-    Combine all Cowrie log files into a single file.
+    def combine_logs(self):
+        print(self.color(f"[*] Combining {len(self.log_files)} log files...", self.CYAN))
 
-    This function combines all log files matching the glob pattern
-    specified in LOG_FILES into a single file specified in
-    OUTPUT_COMBINED. The combined log file is overwritten if it
-    already exists.
+        if not self.log_files:
+            log_dir = self.input_with_default(self.color("    Please enter the directory containing the log files", self.WHITE), ".")
+            self.log_files.extend(glob.glob(os.path.join(log_dir, "cowrie.json*")))
 
-    Returns:
-        str: The path to the combined log file.
-    """
-    print(color(f"[*] Combining {len(LOG_FILES)} log files...", CYAN))
+            if not self.log_files:
+                print(self.color("[!] No log files found matching the pattern.", self.RED))
+                import sys
+                sys.exit(1)
 
-    # Checking if the LOG_FILES exist
-    if not LOG_FILES:
-        # asking user to specify the location of the log files
-        log_dir = input_with_default(color("    Please enter the directory containing the log files", WHITE), ".")
-        LOG_FILES.extend(glob.glob(os.path.join(log_dir, "cowrie.json*")))
+        with open(self.output_combined, 'w') as outfile:
+            for log_file in sorted(self.log_files):
+                if log_file == self.output_combined:
+                    continue
+                print(self.color(f"    Processing: {log_file}", self.DIM))
+                with open(log_file, 'r') as infile:
+                    for line in infile:
+                        line = line.strip()
+                        if line:
+                            try:
+                                obj = json.loads(line)
+                                outfile.write(json.dumps(obj) + '\n')
+                            except json.JSONDecodeError:
+                                pass
+        
+        print(self.color(f"[+] Combined logs saved to: {self.output_combined}", self.GREEN))
+        return self.output_combined
 
-        if not LOG_FILES:
-            print(color("[!] No log files found matching the pattern.", RED))
-            sys.exit(1)
+    def get_abuse_info(self, ip):
+        try:
+            url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,isp,org,as,abuseEmails"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                if data.get('status') == 'success':
+                    abuse_email = data.get('abuseEmails', '')
+                    if not abuse_email:
+                        isp = data.get('isp', data.get('org', ''))
+                        abuse_email = self.guess_abuse_email(isp)
+                    return {
+                        'isp': data.get('isp', 'N/A'),
+                        'org': data.get('org', 'N/A'),
+                        'country': data.get('country', 'N/A'),
+                        'abuse_email': abuse_email
+                    }
+        except Exception:
+            pass
+        return {'isp': 'N/A', 'org': 'N/A', 'country': 'N/A', 'abuse_email': 'N/A'}
 
+    def guess_abuse_email(self, isp):
+        isp_lower = isp.lower()
+        if 'digitalocean' in isp_lower:
+            return 'abuse@digitalocean.com'
+        elif 'linode' in isp_lower:
+            return 'abuse@linode.com'
+        elif 'aws' in isp_lower or 'amazon' in isp_lower:
+            return 'abuse@amazonaws.com'
+        elif 'google' in isp_lower:
+            return 'abuse@google.com'
+        elif 'azure' in isp_lower or 'microsoft' in isp_lower:
+            return 'abuse@microsoft.com'
+        elif 'ovh' in isp_lower:
+            return 'abuse@ovh.net'
+        elif 'hetzner' in isp_lower:
+            return 'abuse@hetzner.com'
+        elif 'vultr' in isp_lower:
+            return 'abuse@vultr.com'
+        elif 'alibaba' in isp_lower:
+            return 'abuse@alibaba-inc.com'
+        elif 'tencent' in isp_lower:
+            return 'abuse@tencent.com'
+        elif 'huawei' in isp_lower:
+            return 'abuse@huawei.com'
+        elif 'chinanet' in isp_lower or 'china telecom' in isp_lower:
+            return 'anti-spam@ctc.net.cn'
+        elif 'kakao' in isp_lower:
+            return 'abuse@kakao.com'
+        elif 'contabo' in isp_lower:
+            return 'abuse@contabo.de'
+        return 'abuse@<isp>.com'
 
-    with open(OUTPUT_COMBINED, 'w') as outfile:
-        for log_file in sorted(LOG_FILES):
-            if log_file == OUTPUT_COMBINED:
-                continue
-            print(color(f"    Processing: {log_file}", DIM))
-            with open(log_file, 'r') as infile:
-                for line in infile:
-                    line = line.strip()
-                    if line:
-                        try:
-                            obj = json.loads(line)
-                            outfile.write(json.dumps(obj) + '\n')
-                        except json.JSONDecodeError:
-                            pass
-    
-    print(color(f"[+] Combined logs saved to: {OUTPUT_COMBINED}", GREEN))
-    return OUTPUT_COMBINED
+    def lookup_ips_concurrent(self, ips_list):
+        print(self.color("\n[*] Looking up IP abuse information...", self.CYAN))
+        ip_info = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_ip = {executor.submit(self.get_abuse_info, ip): ip for ip in ips_list}
+            completed = 0
+            total = len(future_to_ip)
+            for future in as_completed(future_to_ip):
+                ip = future_to_ip[future]
+                try:
+                    ip_info[ip] = future.result()
+                except Exception:
+                    ip_info[ip] = {'isp': 'N/A', 'org': 'N/A', 'country': 'N/A', 'abuse_email': 'N/A'}
+                completed += 1
+                if completed % 10 == 0 or completed == total:
+                    print(self.color(f"    Progress: {completed}/{total}", self.DIM))
+        return ip_info
 
-def get_abuse_info(ip):
-    """
-    Look up IP abuse information using ip-api.com.
+    def get_country_flag(self, country_code):
+        flags = {
+            'US': 'US', 'CN': 'CN', 'RU': 'RU', 'DE': 'DE', 'NL': 'NL',
+            'GB': 'GB', 'FR': 'FR', 'JP': 'JP', 'KR': 'KR', 'IN': 'IN',
+            'BR': 'BR', 'CA': 'CA', 'AU': 'AU', 'IT': 'IT', 'ES': 'ES',
+            'TW': 'TW', 'HK': 'HK', 'SG': 'SG', 'UA': 'UA', 'PL': 'PL',
+        }
+        return flags.get(country_code, '--')
 
-    Parameters:
-    ip (str): The IP address to look up.
+    def parse_logs(self, combined_file):
+        print(self.color(f"\n[*] Parsing: {combined_file}", self.CYAN))
+        
+        stats = {
+            'connections': 0,
+            'successful_logins': 0,
+            'failed_logins': 0,
+            'commands_executed': 0,
+            'files_uploaded': 0,
+            'files_downloaded': 0,
+        }
+        
+        ips = defaultdict(int)
+        commands = []
+        files_uploaded = []
+        files_downloaded = []
+        successful_logins = []
+        failed_logins = []
+        credentials = defaultdict(lambda: {'success': 0, 'failed': 0})
+        sessions = defaultdict(lambda: {'commands': [], 'files': [], 'login': None, 'ip': None, 'timestamp': None})
+        
+        timestamps = []
+        
+        with open(combined_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                
+                eventid = event.get('eventid', '')
+                src_ip = event.get('src_ip', 'unknown')
+                session = event.get('session', 'unknown')
+                timestamp = event.get('timestamp', '')
+                
+                if timestamp:
+                    timestamps.append(timestamp)
+                
+                if eventid == 'cowrie.session.connect':
+                    stats['connections'] += 1
+                    ips[src_ip] += 1
+                    sessions[session]['ip'] = src_ip
+                    sessions[session]['timestamp'] = timestamp
+                
+                elif eventid == 'cowrie.login.success':
+                    stats['successful_logins'] += 1
+                    username = event.get('username', 'unknown')
+                    password = event.get('password', '')
+                    successful_logins.append({
+                        'ip': src_ip,
+                        'username': username,
+                        'password': password,
+                        'timestamp': timestamp
+                    })
+                    credentials[username]['success'] += 1
+                    sessions[session]['login'] = 'success'
+                
+                elif eventid == 'cowrie.login.failed':
+                    stats['failed_logins'] += 1
+                    username = event.get('username', 'unknown')
+                    password = event.get('password', '')
+                    failed_logins.append({
+                        'ip': src_ip,
+                        'username': username,
+                        'password': password,
+                        'timestamp': timestamp
+                    })
+                    credentials[username]['failed'] += 1
+                
+                elif eventid == 'cowrie.command.input':
+                    stats['commands_executed'] += 1
+                    cmd = event.get('input', '')
+                    commands.append({
+                        'ip': src_ip,
+                        'command': cmd,
+                        'timestamp': timestamp
+                    })
+                    sessions[session]['commands'].append(cmd)
+                
+                elif eventid == 'cowrie.session.file_upload':
+                    stats['files_uploaded'] += 1
+                    filename = event.get('filename', 'unknown')
+                    shasum = event.get('shasum', '')
+                    files_uploaded.append({
+                        'ip': src_ip,
+                        'filename': filename,
+                        'shasum': shasum,
+                        'timestamp': timestamp
+                    })
+                    sessions[session]['files'].append(filename)
+                
+                elif eventid == 'cowrie.session.file_download':
+                    stats['files_downloaded'] += 1
+                    filename = event.get('filename', 'unknown')
+                    files_downloaded.append({
+                        'ip': src_ip,
+                        'filename': filename,
+                        'timestamp': timestamp
+                    })
+        
+        date_range = None
+        if timestamps:
+            sorted_ts = sorted(timestamps)
+            start_date = sorted_ts[0][:10] if sorted_ts[0] else 'N/A'
+            end_date = sorted_ts[-1][:10] if sorted_ts[-1] else 'N/A'
+            if start_date == end_date:
+                date_range = start_date
+            else:
+                date_range = f"{start_date} to {end_date}"
+        
+        return {
+            'stats': stats,
+            'ips': dict(ips),
+            'commands': commands,
+            'files_uploaded': files_uploaded,
+            'files_downloaded': files_downloaded,
+            'successful_logins': successful_logins,
+            'failed_logins': failed_logins,
+            'credentials': dict(credentials),
+            'sessions': dict(sessions),
+            'date_range': date_range
+        }
 
-    Returns:
-    dict: A dictionary containing IP abuse information.
-        'isp' (str): The ISP of the IP address.
-        'org' (str): The organization of the IP address.
-        'country' (str): The country of the IP address.
-        'abuse_email' (str): The abuse contact email of the IP address.
-    """
-    try:
-        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,isp,org,as,abuseEmails"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            if data.get('status') == 'success':
-                abuse_email = data.get('abuseEmails', '')
-                if not abuse_email:
-                    isp = data.get('isp', data.get('org', ''))
-                    abuse_email = guess_abuse_email(isp)
-                return {
-                    'isp': data.get('isp', 'N/A'),
-                    'org': data.get('org', 'N/A'),
-                    'country': data.get('country', 'N/A'),
-                    'abuse_email': abuse_email
-                }
-    except Exception:
-        pass
-    return {'isp': 'N/A', 'org': 'N/A', 'country': 'N/A', 'abuse_email': 'N/A'}
-
-def guess_abuse_email(isp):
-    isp_lower = isp.lower()
-    if 'digitalocean' in isp_lower:
-        return 'abuse@digitalocean.com'
-    elif 'linode' in isp_lower:
-        return 'abuse@linode.com'
-    elif 'aws' in isp_lower or 'amazon' in isp_lower:
-        return 'abuse@amazonaws.com'
-    elif 'google' in isp_lower:
-        return 'abuse@google.com'
-    elif 'azure' in isp_lower or 'microsoft' in isp_lower:
-        return 'abuse@microsoft.com'
-    elif 'ovh' in isp_lower:
-        return 'abuse@ovh.net'
-    elif 'hetzner' in isp_lower:
-        return 'abuse@hetzner.com'
-    elif 'vultr' in isp_lower:
-        return 'abuse@vultr.com'
-    elif 'alibaba' in isp_lower:
-        return 'abuse@alibaba-inc.com'
-    elif 'tencent' in isp_lower:
-        return 'abuse@tencent.com'
-    elif 'huawei' in isp_lower:
-        return 'abuse@huawei.com'
-    elif 'chinanet' in isp_lower or 'china telecom' in isp_lower:
-        return 'anti-spam@ctc.net.cn'
-    elif 'kakao' in isp_lower:
-        return 'abuse@kakao.com'
-    elif 'contabo' in isp_lower:
-        return 'abuse@contabo.de'
-    return 'abuse@<isp>.com'
-
-def lookup_ips_concurrent(ips_list):
-    """
-    Look up IP abuse information concurrently.
-
-    Parameters:
-    ips_list (list): A list of IP addresses to look up.
-
-    Returns:
-    dict: A dictionary containing IP abuse information for each IP address.
-        'isp' (str): The ISP of the IP address.
-        'org' (str): The organization of the IP address.
-        'country' (str): The country of the IP address.
-        'abuse_email' (str): The abuse contact email of the IP address.
-
-    """
-    
-    print(color("\n[*] Looking up IP abuse information...", CYAN))
-    ip_info = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_ip = {executor.submit(get_abuse_info, ip): ip for ip in ips_list}
-        completed = 0
-        total = len(future_to_ip)
-        for future in as_completed(future_to_ip):
-            ip = future_to_ip[future]
-            try:
-                ip_info[ip] = future.result()
-            except Exception:
-                ip_info[ip] = {'isp': 'N/A', 'org': 'N/A', 'country': 'N/A', 'abuse_email': 'N/A'}
-            completed += 1
-            if completed % 10 == 0 or completed == total:
-                print(color(f"    Progress: {completed}/{total}", DIM))
-    return ip_info
-
-def get_country_flag(country_code):
-    """
-    Return the country flag for a given country code.
-
-    Args:
-        country_code (str): The ISO 3166-1 alpha-2 country code.
-
-    Returns:
-        str: The country flag, or '--' if the country code is not found.
-    """
-    flags = {
-        'US': 'US', 'CN': 'CN', 'RU': 'RU', 'DE': 'DE', 'NL': 'NL',
-        'GB': 'GB', 'FR': 'FR', 'JP': 'JP', 'KR': 'KR', 'IN': 'IN',
-        'BR': 'BR', 'CA': 'CA', 'AU': 'AU', 'IT': 'IT', 'ES': 'ES',
-        'TW': 'TW', 'HK': 'HK', 'SG': 'SG', 'UA': 'UA', 'PL': 'PL',
-    }
-    return flags.get(country_code, '--')
-
-def parse_logs(combined_file):
-    """
-    Parse a combined log file and extract statistics and event information.
-
-    Args:
-        combined_file (str): The path to the combined log file.
-
-    Returns:
-        dict: A dictionary containing statistics and event information.
-            'stats' (dict): A dictionary containing statistics about the log file.
-            'ips' (dict): A dictionary containing a count of connections from each IP address.
-            'commands' (list): A list of dictionaries containing information about commands executed.
-            'files_uploaded' (list): A list of dictionaries containing information about files uploaded.
-            'files_downloaded' (list): A list of dictionaries containing information about files downloaded.
-            'successful_logins' (list): A list of dictionaries containing information about successful logins.
-            'failed_logins' (list): A list of dictionaries containing information about failed logins.
-            'credentials' (dict): A dictionary containing a count of successful and failed logins for each set of credentials.
-            'sessions' (dict): A dictionary containing information about each session.
-            'date_range' (str): A string representing the date range of the log file.
-
-    """
-    print(color(f"\n[*] Parsing: {combined_file}", CYAN))
-    
-    stats = {
-        'connections': 0,
-        'successful_logins': 0,
-        'failed_logins': 0,
-        'commands_executed': 0,
-        'files_uploaded': 0,
-        'files_downloaded': 0,
-    }
-    
-    ips = defaultdict(int)
-    commands = []
-    files_uploaded = []
-    files_downloaded = []
-    successful_logins = []
-    failed_logins = []
-    credentials = defaultdict(lambda: {'success': 0, 'failed': 0})
-    sessions = defaultdict(lambda: {'commands': [], 'files': [], 'login': None, 'ip': None, 'timestamp': None})
-    
-    timestamps = []
-    
-    with open(combined_file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    def print_report(self, data, ip_info=None):
+        stats = data['stats']
+        ips = data['ips']
+        commands = data['commands']
+        files_uploaded = data['files_uploaded']
+        successful_logins = data['successful_logins']
+        failed_logins = data['failed_logins']
+        credentials = data['credentials']
+        date_range = data.get('date_range', 'N/A')
+        
+        self.write_report(f"\n{self.BOLD}{'='*75}")
+        self.write_report(f"{self.BOLD}                      COWRIE HONEYPOT LOG ANALYSIS v{self.VERSION}{self.RESET}")
+        if date_range:
+            self.write_report(f"{self.BOLD}                           Activity: {date_range}")
+        self.write_report(f"{self.BOLD}{'='*75}{self.RESET}")
+        
+        self.write_report(self.color("\n### OVERALL STATISTICS ###", self.YELLOW))
+        self.write_report(f"  {self.color('Total Connections:', self.WHITE):<25} {self.color(str(stats['connections']), self.GREEN)}")
+        self.write_report(f"  {self.color('Successful Logins:', self.WHITE):<25} {self.color(str(stats['successful_logins']), self.GREEN)}")
+        self.write_report(f"  {self.color('Failed Logins:', self.WHITE):<25} {self.color(str(stats['failed_logins']), self.RED)}")
+        self.write_report(f"  {self.color('Commands Executed:', self.WHITE):<25} {self.color(str(stats['commands_executed']), self.CYAN)}")
+        self.write_report(f"  {self.color('Files Uploaded:', self.WHITE):<25} {self.color(str(stats['files_uploaded']), self.MAGENTA)}")
+        self.write_report(f"  {self.color('Files Downloaded:', self.WHITE):<25} {self.color(str(stats['files_downloaded']), self.MAGENTA)}")
+        self.write_report(f"  {self.color('Unique IPs:', self.WHITE):<25} {self.color(str(len(ips)), self.YELLOW)}")
+        
+        if ip_info:
+            self.write_report(self.color("\n### TOP ATTACKER IPs WITH ABUSE CONTACTS ###", self.YELLOW))
+            sorted_ips_list = sorted(ips.items(), key=lambda x: x[1], reverse=True)[:20]
             
-            eventid = event.get('eventid', '')
-            src_ip = event.get('src_ip', 'unknown')
-            session = event.get('session', 'unknown')
-            timestamp = event.get('timestamp', '')
+            abuse_groups = defaultdict(list)
+            for ip, count in sorted_ips_list:
+                info = ip_info.get(ip, {})
+                abuse_email = info.get('abuse_email', 'N/A')
+                abuse_groups[abuse_email].append((ip, count, info.get('isp', 'N/A'), info.get('country', 'N/A')))
             
-            if timestamp:
-                timestamps.append(timestamp)
-            
-            if eventid == 'cowrie.session.connect':
-                stats['connections'] += 1
-                ips[src_ip] += 1
-                sessions[session]['ip'] = src_ip
-                sessions[session]['timestamp'] = timestamp
-            
-            elif eventid == 'cowrie.login.success':
-                stats['successful_logins'] += 1
-                username = event.get('username', 'unknown')
-                password = event.get('password', '')
-                successful_logins.append({
-                    'ip': src_ip,
-                    'username': username,
-                    'password': password,
-                    'timestamp': timestamp
-                })
-                credentials[username]['success'] += 1
-                sessions[session]['login'] = 'success'
-            
-            elif eventid == 'cowrie.login.failed':
-                stats['failed_logins'] += 1
-                username = event.get('username', 'unknown')
-                password = event.get('password', '')
-                failed_logins.append({
-                    'ip': src_ip,
-                    'username': username,
-                    'password': password,
-                    'timestamp': timestamp
-                })
-                credentials[username]['failed'] += 1
-            
-            elif eventid == 'cowrie.command.input':
-                stats['commands_executed'] += 1
-                cmd = event.get('input', '')
-                commands.append({
-                    'ip': src_ip,
-                    'command': cmd,
-                    'timestamp': timestamp
-                })
-                sessions[session]['commands'].append(cmd)
-            
-            elif eventid == 'cowrie.session.file_upload':
-                stats['files_uploaded'] += 1
-                filename = event.get('filename', 'unknown')
-                shasum = event.get('shasum', '')
-                files_uploaded.append({
-                    'ip': src_ip,
-                    'filename': filename,
-                    'shasum': shasum,
-                    'timestamp': timestamp
-                })
-                sessions[session]['files'].append(filename)
-            
-            elif eventid == 'cowrie.session.file_download':
-                stats['files_downloaded'] += 1
-                filename = event.get('filename', 'unknown')
-                files_downloaded.append({
-                    'ip': src_ip,
-                    'filename': filename,
-                    'timestamp': timestamp
-                })
-    
-    date_range = None
-    if timestamps:
-        sorted_ts = sorted(timestamps)
-        start_date = sorted_ts[0][:10] if sorted_ts[0] else 'N/A'
-        end_date = sorted_ts[-1][:10] if sorted_ts[-1] else 'N/A'
-        if start_date == end_date:
-            date_range = start_date
+            for abuse_email, ip_list in sorted(abuse_groups.items(), key=lambda x: sum(i[1] for i in x[1]), reverse=True):
+                if abuse_email == 'N/A':
+                    self.write_report(self.color(f"\n  [Unknown Abuse Contact]", self.RED))
+                else:
+                    self.write_report(self.color(f"\n  [{abuse_email}]", self.CYAN))
+                self.write_report(f"  {'Country':<8} {'IP':<20} {'Connections':<12} ISP")
+                self.write_report(f"  {'-'*8} {'-'*20} {'-'*12} {'-'*35}")
+                for ip, count, isp, country in sorted(ip_list, key=lambda x: x[1], reverse=True):
+                    country_flag = self.get_country_flag(country)
+                    self.write_report(f"  {country_flag:<8} {ip:<20} {count:<12} {isp[:35]}")
+        
+        self.write_report(self.color("\n### SUCCESSFUL LOGINS ###", self.YELLOW))
+        if successful_logins:
+            self.write_report(f"  {'Timestamp':<20} {'IP':<18} {'Username':<15} {'Password':<20}")
+            self.write_report(f"  {'-'*20} {'-'*18} {'-'*15} {'-'*20}")
+            for login in successful_logins[:15]:
+                ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
+                pw = login['password'][:20] if login['password'] else 'N/A'
+                self.write_report(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {self.color(pw, self.RED)}")
+            if len(successful_logins) > 15:
+                more = len(successful_logins) - 15
+                choice = self.input_with_default(self.color(f"\n  Show all {len(successful_logins)} successful logins? (y/n)", self.YELLOW))
+                if choice == 'y':
+                    for login in successful_logins[15:]:
+                        ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
+                        pw = login['password'][:20] if login['password'] else 'N/A'
+                        self.write_report(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {self.color(pw, self.RED)}")
+                else:
+                    self.write_report(self.color(f"  ... and {more} more", self.DIM))
         else:
-            date_range = f"{start_date} to {end_date}"
-    
-    return {
-        'stats': stats,
-        'ips': dict(ips),
-        'commands': commands,
-        'files_uploaded': files_uploaded,
-        'files_downloaded': files_downloaded,
-        'successful_logins': successful_logins,
-        'failed_logins': failed_logins,
-        'credentials': dict(credentials),
-        'sessions': dict(sessions),
-        'date_range': date_range
-    }
-
-def print_report(data, ip_info=None):
-    """
-    Print a detailed report of the honeypot log analysis
-
-    Parameters:
-    data (dict): the parsed log data
-    ip_info (dict): optional, a dictionary containing IP information from abuseipdb.com
-
-    Returns:
-    None
-    """
-    stats = data['stats']
-    ips = data['ips']
-    commands = data['commands']
-    files_uploaded = data['files_uploaded']
-    successful_logins = data['successful_logins']
-    failed_logins = data['failed_logins']
-    credentials = data['credentials']
-    date_range = data.get('date_range', 'N/A')
-    
-    print(f"\n{BOLD}{'='*75}")
-    print(f"{BOLD}                      COWRIE HONEYPOT LOG ANALYSIS v{VERSION}{RESET}")
-    if date_range:
-        print(f"{BOLD}                           Activity: {date_range}")
-    print(f"{BOLD}{'='*75}{RESET}")
-    
-    print(color("\n### OVERALL STATISTICS ###", YELLOW))
-    print(f"  {color('Total Connections:', WHITE):<25} {color(str(stats['connections']), GREEN)}")
-    print(f"  {color('Successful Logins:', WHITE):<25} {color(str(stats['successful_logins']), GREEN)}")
-    print(f"  {color('Failed Logins:', WHITE):<25} {color(str(stats['failed_logins']), RED)}")
-    print(f"  {color('Commands Executed:', WHITE):<25} {color(str(stats['commands_executed']), CYAN)}")
-    print(f"  {color('Files Uploaded:', WHITE):<25} {color(str(stats['files_uploaded']), MAGENTA)}")
-    print(f"  {color('Files Downloaded:', WHITE):<25} {color(str(stats['files_downloaded']), MAGENTA)}")
-    print(f"  {color('Unique IPs:', WHITE):<25} {color(str(len(ips)), YELLOW)}")
-    
-    if ip_info:
-        print(color("\n### TOP ATTACKER IPs WITH ABUSE CONTACTS ###", YELLOW))
-        sorted_ips_list = sorted(ips.items(), key=lambda x: x[1], reverse=True)[:20]
+            self.write_report(self.color("  No successful logins", self.DIM))
         
-        abuse_groups = defaultdict(list)
-        for ip, count in sorted_ips_list:
-            info = ip_info.get(ip, {})
-            abuse_email = info.get('abuse_email', 'N/A')
-            abuse_groups[abuse_email].append((ip, count, info.get('isp', 'N/A'), info.get('country', 'N/A')))
+        self.write_report(self.color("\n### FAILED LOGINS ###", self.YELLOW))
+        if failed_logins:
+            self.write_report(f"  {'Timestamp':<20} {'IP':<18} {'Username':<15} {'Password':<20}")
+            self.write_report(f"  {'-'*20} {'-'*18} {'-'*15} {'-'*20}")
+            for login in failed_logins[:15]:
+                ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
+                pw = login['password'][:20] if login['password'] else 'N/A'
+                self.write_report(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {pw}")
+            if len(failed_logins) > 15:
+                more = len(failed_logins) - 15
+                choice = self.input_with_default(self.color(f"\n  Show all {len(failed_logins)} failed logins? (y/n)", self.YELLOW))
+                if choice == 'y':
+                    for login in failed_logins[15:]:
+                        ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
+                        pw = login['password'][:20] if login['password'] else 'N/A'
+                        self.write_report(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {pw}")
+                else:
+                    self.write_report(self.color(f"  ... and {more} more", self.DIM))
+        else:
+            self.write_report(self.color("  No failed logins", self.DIM))
         
-        for abuse_email, ip_list in sorted(abuse_groups.items(), key=lambda x: sum(i[1] for i in x[1]), reverse=True):
-            if abuse_email == 'N/A':
-                print(color(f"\n  [Unknown Abuse Contact]", RED))
-            else:
-                print(color(f"\n  [{abuse_email}]", CYAN))
-            print(f"  {'Country':<8} {'IP':<20} {'Connections':<12} ISP")
-            print(f"  {'-'*8} {'-'*20} {'-'*12} {'-'*35}")
-            for ip, count, isp, country in sorted(ip_list, key=lambda x: x[1], reverse=True):
-                country_flag = get_country_flag(country)
-                print(f"  {country_flag:<8} {ip:<20} {count:<12} {isp[:35]}")
-    
-    print(color("\n### SUCCESSFUL LOGINS ###", YELLOW))
-    if successful_logins:
-        print(f"  {'Timestamp':<20} {'IP':<18} {'Username':<15} {'Password':<20}")
-        print(f"  {'-'*20} {'-'*18} {'-'*15} {'-'*20}")
-        for login in successful_logins[:15]:
-            ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
-            pw = login['password'][:20] if login['password'] else 'N/A'
-            print(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {color(pw, RED)}")
-        if len(successful_logins) > 15:
-            more = len(successful_logins) - 15
-            choice = input_with_default(color(f"\n  Show all {len(successful_logins)} successful logins? (y/n)", YELLOW))
-            if choice == 'y':
-                for login in successful_logins[15:]:
-                    ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
-                    pw = login['password'][:20] if login['password'] else 'N/A'
-                    print(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {color(pw, RED)}")
-            else:
-                print(color(f"  ... and {more} more", DIM))
-    else:
-        print(color("  No successful logins", DIM))
-    
-    print(color("\n### FAILED LOGINS ###", YELLOW))
-    if failed_logins:
-        print(f"  {'Timestamp':<20} {'IP':<18} {'Username':<15} {'Password':<20}")
-        print(f"  {'-'*20} {'-'*18} {'-'*15} {'-'*20}")
-        for login in failed_logins[:15]:
-            ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
-            pw = login['password'][:20] if login['password'] else 'N/A'
-            print(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {pw}")
-        if len(failed_logins) > 15:
-            more = len(failed_logins) - 15
-            choice = input_with_default(color(f"\n  Show all {len(failed_logins)} failed logins? (y/n)", YELLOW))
-            if choice == 'y':
-                for login in failed_logins[15:]:
-                    ts = login['timestamp'][:19] if login['timestamp'] else 'N/A'
-                    pw = login['password'][:20] if login['password'] else 'N/A'
-                    print(f"  {ts:<20} {login['ip']:<18} {login['username']:<15} {pw}")
-            else:
-                print(color(f"  ... and {more} more", DIM))
-    else:
-        print(color("  No failed logins", DIM))
-    
-    print(color("\n### USERNAME STATISTICS (Top 15) ###", YELLOW))
-    print(f"  {'Username':<25} {'Success':<12} {'Failed':<10}")
-    print(f"  {'-'*25} {'-'*12} {'-'*10}")
-    sorted_creds = sorted(credentials.items(), key=lambda x: x[1]['success'], reverse=True)
-    for user, data in sorted_creds[:15]:
-        success_color = GREEN if data['success'] > 0 else DIM
-        fail_color = RED if data['failed'] > 0 else DIM
-        print(f"  {user:<25} {color(str(data['success']), success_color):<12} {color(str(data['failed']), fail_color):<10}")
-    
-    print(color("\n### EXECUTED COMMANDS (Sample) ###", YELLOW))
-    if commands:
-        unique_cmds = len(set(c['command'] for c in commands))
-        print(f"  {color('Total unique commands:', WHITE)} {unique_cmds}")
-        print(f"\n  {'IP':<18} {'Timestamp':<19} {'Command':<40}")
-        print(f"  {'-'*18} {'-'*19} {'-'*40}")
-        for cmd in commands[:25]:
-            ts = cmd['timestamp'][:19] if cmd['timestamp'] else 'N/A'
-            command = cmd['command'][:40] + ('...' if len(cmd['command']) > 40 else '')
-            print(f"  {cmd['ip']:<18} {ts:<19} {command}")
-        if len(commands) > 25:
-            more = len(commands) - 25
-            choice = input_with_default(color(f"\n  Show all {len(commands)} commands? (y/n)", YELLOW))
-            if choice == 'y':
-                for cmd in commands[25:]:
-                    ts = cmd['timestamp'][:19] if cmd['timestamp'] else 'N/A'
-                    command = cmd['command'][:40] + ('...' if len(cmd['command']) > 40 else '')
-                    print(f"  {cmd['ip']:<18} {ts:<19} {command}")
-            else:
-                print(color(f"  ... and {more} more", DIM))
-    else:
-        print(color("  No commands executed", DIM))
-    
-    print(color("\n### UPLOADED FILES ###", YELLOW))
-    if files_uploaded:
-        print(f"  {'Filename':<30} {'SHA256 (first 20)':<22} {'IP':<18} {'Timestamp':<20}")
-        print(f"  {'-'*30} {'-'*22} {'-'*18} {'-'*20}")
-        for f in files_uploaded[:15]:
-            sha = f['shasum'][:20] if f['shasum'] else 'N/A'
-            fname = f['filename'][:30] if f['filename'] else 'N/A'
-            ts = f['timestamp'][:19] if f['timestamp'] else 'N/A'
-            print(f"  {fname:<30} {sha:<22} {f['ip']:<18} {ts}")
-        if len(files_uploaded) > 15:
-            more = len(files_uploaded) - 15
-            choice = input_with_default(color(f"\n  Show all {len(files_uploaded)} uploaded files? (y/n)", YELLOW))
-            if choice == 'y':
-                for f in files_uploaded[15:]:
-                    sha = f['shasum'][:20] if f['shasum'] else 'N/A'
-                    fname = f['filename'][:30] if f['filename'] else 'N/A'
-                    ts = f['timestamp'][:19] if f['timestamp'] else 'N/A'
-                    print(f"  {fname:<30} {sha:<22} {f['ip']:<18} {ts}")
-            else:
-                print(color(f"  ... and {more} more", DIM))
-    else:
-        print(color("  No files uploaded", DIM))
-
-def main():
-    """
-    Main function for parsing Cowrie logs.
-
-    This function combines the logs from the provided files, parses the combined
-    log, looks up the abuse contact information for the top attacking IPs, and
-    prints a report including the overall statistics, top attacking IPs with
-    abuse contact information, executed commands, and uploaded files.
-
-    If the user interrupts the program, it will exit with a message indicating
-    that it was interrupted by the user.
-
-    """
-    try:
-        combined_file = combine_logs()
-        data = parse_logs(combined_file)
+        self.write_report(self.color("\n### USERNAME STATISTICS (Top 15) ###", self.YELLOW))
+        self.write_report(f"  {'Username':<25} {'Success':<15} {'Failed':<15}")
+        self.write_report(f"  {'-'*25} {'-'*15} {'-'*15}")
+        sorted_creds = sorted(credentials.items(), key=lambda x: x[1]['success'], reverse=True)
+        for user, data in sorted_creds[:15]:
+            success_color = self.GREEN if data['success'] > 0 else self.DIM
+            fail_color = self.RED if data['failed'] > 0 else self.DIM
+            # right-align the numbers for better readability
+            success_str = str(data['success']).rjust(9)
+            fail_str = str(data['failed']).rjust(13)
+            self.write_report(f"  {user:<25} {self.color(success_str, success_color)} {self.color(fail_str, fail_color)}")
         
-        sorted_ips_list = sorted(data['ips'].keys(), key=lambda x: data['ips'][x], reverse=True)
-        ip_info = lookup_ips_concurrent(sorted_ips_list)
+        self.write_report(self.color("\n### EXECUTED COMMANDS (Sample) ###", self.YELLOW))
+        if commands:
+            unique_cmds = len(set(c['command'] for c in commands))
+            self.write_report(f"  {self.color('Total unique commands:', self.WHITE)} {unique_cmds}")
+            self.write_report(f"\n  {'IP':<18} {'Timestamp':<19} {'Command':<40}")
+            self.write_report(f"  {'-'*18} {'-'*19} {'-'*40}")
+            for cmd in commands[:25]:
+                ts = cmd['timestamp'][:19] if cmd['timestamp'] else 'N/A'
+                command = cmd['command'][:40] + ('...' if len(cmd['command']) > 40 else '')
+                self.write_report(f"  {cmd['ip']:<18} {ts:<19} {command}")
+            if len(commands) > 25:
+                more = len(commands) - 25
+                choice = self.input_with_default(self.color(f"\n  Show all {len(commands)} commands? (y/n)", self.YELLOW))
+                if choice == 'y':
+                    for cmd in commands[25:]:
+                        ts = cmd['timestamp'][:19] if cmd['timestamp'] else 'N/A'
+                        command = cmd['command'][:40] + ('...' if len(cmd['command']) > 40 else '')
+                        self.write_report(f"  {cmd['ip']:<18} {ts:<19} {command}")
+                else:
+                    self.write_report(self.color(f"  ... and {more} more", self.DIM))
+        else:
+            self.write_report(self.color("  No commands executed", self.DIM))
         
-        print_report(data, ip_info)
-    except KeyboardInterrupt:
-        print(color("\n\n[!] Interrupted by user. Exiting...", RED))
-        sys.exit(0)
+        self.write_report(self.color("\n### UPLOADED FILES ###", self.YELLOW))
+        if files_uploaded:
+            self.write_report(f"  {'Filename':<30} {'SHA256 (first 20)':<22} {'IP':<18} {'Timestamp':<20}")
+            self.write_report(f"  {'-'*30} {'-'*22} {'-'*18} {'-'*20}")
+            for f in files_uploaded[:15]:
+                sha = f['shasum'][:20] if f['shasum'] else 'N/A'
+                fname = f['filename'][:30] if f['filename'] else 'N/A'
+                ts = f['timestamp'][:19] if f['timestamp'] else 'N/A'
+                self.write_report(f"  {fname:<30} {sha:<22} {f['ip']:<18} {ts}")
+            if len(files_uploaded) > 15:
+                more = len(files_uploaded) - 15
+                choice = self.input_with_default(self.color(f"\n  Show all {len(files_uploaded)} uploaded files? (y/n)", self.YELLOW))
+                if choice == 'y':
+                    for f in files_uploaded[15:]:
+                        sha = f['shasum'][:20] if f['shasum'] else 'N/A'
+                        fname = f['filename'][:30] if f['filename'] else 'N/A'
+                        ts = f['timestamp'][:19] if f['timestamp'] else 'N/A'
+                        self.write_report(f"  {fname:<30} {sha:<22} {f['ip']:<18} {ts}")
+                else:
+                    self.write_report(self.color(f"  ... and {more} more", self.DIM))
+        else:
+            self.write_report(self.color("  No files uploaded", self.DIM))
 
-if __name__ == "__main__":
-    main()
+        # write report to the file
+        with open(self.output_report, 'w') as f:
+            f.write('\n'.join(self.REPORT))
+
+    def run(self):
+        import sys
+        try:
+            combined_file = self.combine_logs()
+            data = self.parse_logs(combined_file)
+            
+            sorted_ips_list = sorted(data['ips'].keys(), key=lambda x: data['ips'][x], reverse=True)
+            ip_info = self.lookup_ips_concurrent(sorted_ips_list)
+            
+            self.print_report(data, ip_info)
+        except KeyboardInterrupt:
+            print(self.color("\n\n[!] Interrupted by user. Exiting...", self.RED))
+            sys.exit(0)
+
+parser = CowrieLogParser()
+parser.run()
