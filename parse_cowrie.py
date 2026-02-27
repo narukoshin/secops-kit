@@ -186,6 +186,7 @@ class CowrieLogParser:
         failed_logins = []
         credentials = defaultdict(lambda: {'success': 0, 'failed': 0})
         sessions = defaultdict(lambda: {'commands': [], 'files': [], 'login': None, 'ip': None, 'timestamp': None})
+        evidence = []
         
         timestamps = []
         
@@ -268,6 +269,15 @@ class CowrieLogParser:
                         'filename': filename,
                         'timestamp': timestamp
                     })
+                
+                message = event.get('message', '')
+                if message:
+                    evidence.append({
+                        'ip': src_ip,
+                        'timestamp': timestamp,
+                        'eventid': eventid,
+                        'message': message
+                    })
         
         date_range = None
         if timestamps:
@@ -289,7 +299,8 @@ class CowrieLogParser:
             'failed_logins': failed_logins,
             'credentials': dict(credentials),
             'sessions': dict(sessions),
-            'date_range': date_range
+            'date_range': date_range,
+            'evidence': evidence
         }
 
     def print_report(self, data, ip_info=None):
@@ -301,6 +312,7 @@ class CowrieLogParser:
         failed_logins = data['failed_logins']
         credentials = data['credentials']
         date_range = data.get('date_range', 'N/A')
+        evidence = data.get('evidence', [])
         
         self.write_report(f"\n{self.BOLD}{'='*75}")
         self.write_report(f"{self.BOLD}                      COWRIE HONEYPOT LOG ANALYSIS v{self.VERSION}{self.RESET}")
@@ -438,9 +450,36 @@ class CowrieLogParser:
         else:
             self.write_report(self.color("  No files uploaded", self.DIM))
 
+        self.write_report(self.color("\n### EVIDENCE (Messages) ###", self.YELLOW))
+        if evidence:
+            self.write_report(f"  {self.color('Total events with messages:', self.WHITE)} {len(evidence)}")
+            self.write_report(f"\n  {'Timestamp':<20} {'IP':<18} {'Event':<30} Message")
+            self.write_report(f"  {'-'*20} {'-'*18} {'-'*30} {'-'*40}")
+            for ev in evidence[:25]:
+                ts = ev['timestamp'][:19] if ev['timestamp'] else 'N/A'
+                ip = ev['ip'] if ev['ip'] else 'N/A'
+                eventid = ev['eventid'][:30] if ev['eventid'] else 'N/A'
+                msg = ev['message'] if ev['message'] else 'N/A'
+                self.write_report(f"  {ts:<20} {ip:<18} {eventid:<30} {msg}")
+            if len(evidence) > 25:
+                more = len(evidence) - 25
+                choice = self.input_with_default(self.color(f"\n  Show all {len(evidence)} evidence messages? (y/n)", self.YELLOW))
+                if choice == 'y':
+                    for ev in evidence[25:]:
+                        ts = ev['timestamp'][:19] if ev['timestamp'] else 'N/A'
+                        ip = ev['ip'] if ev['ip'] else 'N/A'
+                        eventid = ev['eventid'][:30] if ev['eventid'] else 'N/A'
+                        msg = ev['message'] if ev['message'] else 'N/A'
+                        self.write_report(f"  {ts:<20} {ip:<18} {eventid:<30} {msg}")
+                else:
+                    self.write_report(self.color(f"  ... and {more} more", self.DIM))
+        else:
+            self.write_report(self.color("  No evidence messages", self.DIM))
+
         # write report to the file
         with open(self.output_report, 'w') as f:
             f.write('\n'.join(self.REPORT))
+            print(self.color(f"\n[+] Report saved to: {self.output_report}", self.GREEN))
 
     def run(self):
         import sys
