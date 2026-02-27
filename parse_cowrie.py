@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class CowrieLogParser:
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     RESET = "\033[0m"
     BOLD = "\033[1m"
