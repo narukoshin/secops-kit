@@ -8,6 +8,8 @@ from collections import defaultdict
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+VERSION = "1.0.0"
+
 LOG_FILES = glob.glob("cowrie.json*")
 OUTPUT_COMBINED = "cowrie_combined.json"
 
@@ -23,9 +25,34 @@ CYAN = "\033[96m"
 WHITE = "\033[97m"
 
 def color(text, color_code):
+    """
+    Return a string with the specified color code applied to it.
+
+    Parameters:
+    text (str): The string to apply the color code to.
+    color_code (str): The color code to apply.
+
+    Returns:
+    str: The string with the color code applied.
+    """
     return f"{color_code}{text}{RESET}"
 
 def input_with_default(prompt, default="n"):
+    """
+    Prompt the user for input, and return the response if it is not empty.
+    If the response is empty, return the default value.
+
+    Parameters:
+    prompt (str): The prompt to display to the user.
+    default (str): The default value to return if the user response is empty.
+
+    Returns:
+    str: The user response if it is not empty, otherwise the default value.
+
+    Raises:
+    EOFError: If the user presses Ctrl+D to end the input stream.
+    KeyboardInterrupt: If the user presses Ctrl+C to interrupt the program.
+    """
     try:
         response = input(f"{prompt} [{default}]: ").strip().lower()
         return response if response else default
@@ -34,8 +61,30 @@ def input_with_default(prompt, default="n"):
         sys.exit(0)
 
 def combine_logs():
+    """
+    Combine all Cowrie log files into a single file.
+
+    This function combines all log files matching the glob pattern
+    specified in LOG_FILES into a single file specified in
+    OUTPUT_COMBINED. The combined log file is overwritten if it
+    already exists.
+
+    Returns:
+        str: The path to the combined log file.
+    """
     print(color(f"[*] Combining {len(LOG_FILES)} log files...", CYAN))
-    
+
+    # Checking if the LOG_FILES exist
+    if not LOG_FILES:
+        # asking user to specify the location of the log files
+        log_dir = input_with_default(color("    Please enter the directory containing the log files", WHITE), ".")
+        LOG_FILES.extend(glob.glob(os.path.join(log_dir, "cowrie.json*")))
+
+        if not LOG_FILES:
+            print(color("[!] No log files found matching the pattern.", RED))
+            sys.exit(1)
+
+
     with open(OUTPUT_COMBINED, 'w') as outfile:
         for log_file in sorted(LOG_FILES):
             if log_file == OUTPUT_COMBINED:
@@ -55,6 +104,19 @@ def combine_logs():
     return OUTPUT_COMBINED
 
 def get_abuse_info(ip):
+    """
+    Look up IP abuse information using ip-api.com.
+
+    Parameters:
+    ip (str): The IP address to look up.
+
+    Returns:
+    dict: A dictionary containing IP abuse information.
+        'isp' (str): The ISP of the IP address.
+        'org' (str): The organization of the IP address.
+        'country' (str): The country of the IP address.
+        'abuse_email' (str): The abuse contact email of the IP address.
+    """
     try:
         url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,isp,org,as,abuseEmails"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -108,6 +170,21 @@ def guess_abuse_email(isp):
     return 'abuse@<isp>.com'
 
 def lookup_ips_concurrent(ips_list):
+    """
+    Look up IP abuse information concurrently.
+
+    Parameters:
+    ips_list (list): A list of IP addresses to look up.
+
+    Returns:
+    dict: A dictionary containing IP abuse information for each IP address.
+        'isp' (str): The ISP of the IP address.
+        'org' (str): The organization of the IP address.
+        'country' (str): The country of the IP address.
+        'abuse_email' (str): The abuse contact email of the IP address.
+
+    """
+    
     print(color("\n[*] Looking up IP abuse information...", CYAN))
     ip_info = {}
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -126,6 +203,15 @@ def lookup_ips_concurrent(ips_list):
     return ip_info
 
 def get_country_flag(country_code):
+    """
+    Return the country flag for a given country code.
+
+    Args:
+        country_code (str): The ISO 3166-1 alpha-2 country code.
+
+    Returns:
+        str: The country flag, or '--' if the country code is not found.
+    """
     flags = {
         'US': 'US', 'CN': 'CN', 'RU': 'RU', 'DE': 'DE', 'NL': 'NL',
         'GB': 'GB', 'FR': 'FR', 'JP': 'JP', 'KR': 'KR', 'IN': 'IN',
@@ -135,6 +221,26 @@ def get_country_flag(country_code):
     return flags.get(country_code, '--')
 
 def parse_logs(combined_file):
+    """
+    Parse a combined log file and extract statistics and event information.
+
+    Args:
+        combined_file (str): The path to the combined log file.
+
+    Returns:
+        dict: A dictionary containing statistics and event information.
+            'stats' (dict): A dictionary containing statistics about the log file.
+            'ips' (dict): A dictionary containing a count of connections from each IP address.
+            'commands' (list): A list of dictionaries containing information about commands executed.
+            'files_uploaded' (list): A list of dictionaries containing information about files uploaded.
+            'files_downloaded' (list): A list of dictionaries containing information about files downloaded.
+            'successful_logins' (list): A list of dictionaries containing information about successful logins.
+            'failed_logins' (list): A list of dictionaries containing information about failed logins.
+            'credentials' (dict): A dictionary containing a count of successful and failed logins for each set of credentials.
+            'sessions' (dict): A dictionary containing information about each session.
+            'date_range' (str): A string representing the date range of the log file.
+
+    """
     print(color(f"\n[*] Parsing: {combined_file}", CYAN))
     
     stats = {
@@ -261,6 +367,16 @@ def parse_logs(combined_file):
     }
 
 def print_report(data, ip_info=None):
+    """
+    Print a detailed report of the honeypot log analysis
+
+    Parameters:
+    data (dict): the parsed log data
+    ip_info (dict): optional, a dictionary containing IP information from abuseipdb.com
+
+    Returns:
+    None
+    """
     stats = data['stats']
     ips = data['ips']
     commands = data['commands']
@@ -271,7 +387,7 @@ def print_report(data, ip_info=None):
     date_range = data.get('date_range', 'N/A')
     
     print(f"\n{BOLD}{'='*75}")
-    print(f"{BOLD}                      COWRIE HONEYPOT LOG ANALYSIS")
+    print(f"{BOLD}                      COWRIE HONEYPOT LOG ANALYSIS v{VERSION}{RESET}")
     if date_range:
         print(f"{BOLD}                           Activity: {date_range}")
     print(f"{BOLD}{'='*75}{RESET}")
@@ -404,6 +520,18 @@ def print_report(data, ip_info=None):
         print(color("  No files uploaded", DIM))
 
 def main():
+    """
+    Main function for parsing Cowrie logs.
+
+    This function combines the logs from the provided files, parses the combined
+    log, looks up the abuse contact information for the top attacking IPs, and
+    prints a report including the overall statistics, top attacking IPs with
+    abuse contact information, executed commands, and uploaded files.
+
+    If the user interrupts the program, it will exit with a message indicating
+    that it was interrupted by the user.
+
+    """
     try:
         combined_file = combine_logs()
         data = parse_logs(combined_file)
