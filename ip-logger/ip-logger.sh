@@ -5,6 +5,13 @@
 # Set COLLECT_EVIDENCE to true to collect evidence
 COLLECT_EVIDENCE=true
 
+# FoxWHOIS-API integration
+# https://github.com/narukoshin/FoxWHOIS-API
+USE_FOX_WHOIS=false
+FOX_WHOIS_API="[whois api url]"
+FOX_WHOIS_USER="[whois api user]"
+FOX_WHOIS_PASS="[whois api password]"
+
 # checking if geoiplookup is installed for geolocation of IP addresses
 if ! command -v geoiplookup &> /dev/null; then
     echo "geoiplookup could not be found. Please install it to get geolocation information for IP addresses."
@@ -189,7 +196,19 @@ unique_ips=($(echo "${!IP_COUNTS[@]}"))
 #   If geoiplookup does not return a geolocation, the function will use whois command to get the country code of the IP address and then use jq command to get the country name from the country code.
 get_location_bg() {
     local ip="$1"
-    local location=$(geoiplookup "$ip" 2>/dev/null | awk -F ': ' '{print $2}' | awk -F ', ' '{print $2}')
+    local location=""
+    
+    if [[ "$USE_FOX_WHOIS" == true && -n "$FOX_WHOIS_API" ]]; then
+        if [[ -n "$FOX_WHOIS_USER" && -n "$FOX_WHOIS_PASS" ]]; then
+            location=$(curl -s -u "$FOX_WHOIS_USER:$FOX_WHOIS_PASS" "${FOX_WHOIS_API}${ip}" 2>/dev/null | jq -r '.country // empty')
+        else
+            location=$(curl -s "${FOX_WHOIS_API}${ip}" 2>/dev/null | jq -r '.country // empty')
+        fi
+    fi
+    
+    if [[ -z "$location" ]]; then
+        location=$(geoiplookup "$ip" 2>/dev/null | awk -F ': ' '{print $2}' | awk -F ', ' '{print $2}')
+    fi
     if [[ -z "$location" ]]; then
         local country_code=$(whois "$ip" 2>/dev/null | grep -i "^country:" | head -n1 | awk '{print $2}')
         location=$(jq -r '.["3166-1"][] | select(.alpha_2=="'"$country_code"'") | .name // "Unknown"' "$ISO_FILE")
@@ -199,7 +218,19 @@ get_location_bg() {
 
 get_abuse_email_bg() {
     local ip="$1"
-    local email=$(curl -s "https://rest.db.ripe.net/abuse-contact/${ip}.json" 2>/dev/null | jq -r '.["abuse-contacts"].email // empty')
+    local email=""
+    
+    if [[ "$USE_FOX_WHOIS" == true && -n "$FOX_WHOIS_API" ]]; then
+        if [[ -n "$FOX_WHOIS_USER" && -n "$FOX_WHOIS_PASS" ]]; then
+            email=$(curl -s -u "$FOX_WHOIS_USER:$FOX_WHOIS_PASS" "${FOX_WHOIS_API}${ip}" 2>/dev/null | jq -r '.abuse_email // empty')
+        else
+            email=$(curl -s "${FOX_WHOIS_API}${ip}" 2>/dev/null | jq -r '.abuse_email // empty')
+        fi
+    fi
+    
+    if [[ -z "$email" ]]; then
+        email=$(curl -s "https://rest.db.ripe.net/abuse-contact/${ip}.json" 2>/dev/null | jq -r '.["abuse-contacts"].email // empty')
+    fi
     if [[ -z "$email" ]]; then
         email=$(whois "$ip" 2>/dev/null | grep -iE "^abuse-mailbox:|^abuse-email:|^org-abuse-email:" | head -n1 | awk -F ': ' '{print $2}' | xargs)
     fi
@@ -209,6 +240,10 @@ get_abuse_email_bg() {
 export -f get_location_bg
 export -f get_abuse_email_bg
 export ISO_FILE
+export USE_FOX_WHOIS
+export FOX_WHOIS_API
+export FOX_WHOIS_USER
+export FOX_WHOIS_PASS
 
 tmpfile=$(mktemp)
 max_jobs=8
