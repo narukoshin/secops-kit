@@ -1,0 +1,7 @@
+# disallowing everything
+*
+
+# Only-allowed list
+!.gitignore
+!ip-logger.sh
+!LICENSE
