@@ -1,0 +1,8 @@
+# Disallowing everything
+* 
+
+# Allow-list
+!.gitignore
+!foxwatch.py
+!.env.example
+!requirements.txt
