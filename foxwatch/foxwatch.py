@@ -24,6 +24,8 @@ BLUE = "\033[34m"
 WHITE = "\033[37m"
 
 # Load environment variables
+# FoxWHOIS-API integration
+# https://github.com/narukoshin/FoxWHOIS-API
 FOXWHOIS_API_URL = os.getenv("FOXWHOIS_API_URL", "") # e.g. "https://api.foxwhois.com/v1/whois/{ip}"
 FOXWHOIS_USER = os.getenv("FOXWHOIS_USER", "") # e.g. "username"
 FOXWHOIS_PASS = os.getenv("FOXWHOIS_PASS", "") # e.g. "password"
